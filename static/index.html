@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Coach-PFE</title>
+  <style>
+    :root {
+      --bg: #0f1419; --panel: #1a2332; --border: #2d3a4d;
+      --text: #e7ecf3; --muted: #8b9cb3; --accent: #3b82f6;
+      --accent-hover: #2563eb; --danger: #f87171; --ok: #34d399;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh; font-family: "Segoe UI", system-ui, sans-serif;
+      background: var(--bg); color: var(--text); line-height: 1.5;
+    }
+    header {
+      padding: 1.25rem 1.5rem; border-bottom: 1px solid var(--border);
+      background: var(--panel);
+    }
+    header h1 { margin: 0; font-size: 1.25rem; }
+    header p { margin: 0.35rem 0 0; color: var(--muted); font-size: 0.88rem; }
+    main { max-width: 1000px; margin: 0 auto; padding: 1.5rem; }
+    label { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 0.35rem; }
+    input, textarea {
+      width: 100%; padding: 0.65rem 0.9rem; border-radius: 8px;
+      border: 1px solid var(--border); background: #121a26; color: var(--text);
+    }
+    textarea { min-height: 100px; resize: vertical; margin-bottom: 0.75rem; }
+    .row { display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: center; margin-top: 0.5rem; }
+    button {
+      cursor: pointer; border: none; border-radius: 8px; padding: 0.65rem 1.25rem;
+      font-weight: 600; background: var(--accent); color: #fff;
+    }
+    button:hover:not(:disabled) { background: var(--accent-hover); }
+    button:disabled { opacity: 0.55; }
+    #status { font-size: 0.9rem; color: var(--muted); }
+    #status.loading { color: #fbbf24; }
+    #status.ok { color: var(--ok); }
+    #status.err { color: var(--danger); }
+    .cards { margin-top: 1rem; display: grid; gap: 0.75rem; }
+    .card {
+      background: var(--panel); border: 1px solid var(--border);
+      border-radius: 10px; padding: 0.85rem 1.1rem;
+    }
+    .card h2 { margin: 0 0 0.5rem; font-size: 0.95rem; color: #93c5fd; }
+    .card pre {
+      margin: 0; white-space: pre-wrap; word-break: break-word; font-size: 0.85rem;
+    }
+    .hidden { display: none !important; }
+    a { color: var(--accent); font-size: 0.9rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Coach-PFE</h1>
+    <p>Pipeline : Analyseur → Planificateur → Writer/Reviewer → Anti-hallucination</p>
+  </header>
+  <main>
+    <label for="session">Session ID (optionnel)</label>
+    <input id="session" type="text" placeholder="ex. etudiant-2026" />
+    <label for="topic">Sujet du PFE</label>
+    <textarea id="topic" placeholder="Votre sujet de mémoire…"></textarea>
+    <div class="row">
+      <button type="button" id="run">Lancer le pipeline</button>
+      <span id="status"></span>
+      <a href="/docs" target="_blank" rel="noopener">Swagger</a>
+    </div>
+    <div id="error" class="card hidden" style="border-color:#7f1d1d">
+      <h2 style="color:var(--danger)">Erreur</h2>
+      <pre id="errorBody"></pre>
+    </div>
+    <div id="exports" class="card hidden">
+      <h2>Exports</h2>
+      <div id="exportLinks"></div>
+    </div>
+    <div id="results" class="cards hidden"></div>
+  </main>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const STEPS = [
+      ["analyzer", "Analyseur"],
+      ["planner", "Planificateur"],
+      ["writer", "Writer"],
+      ["reviewer", "Reviewer"],
+      ["final", "Final (anti-hallucination)"],
+    ];
+
+    function setLoading(on) {
+      $("run").disabled = on;
+      $("status").className = on ? "loading" : "";
+      $("status").textContent = on ? "En cours (~6 appels Gemini, 2–5 min)…" : "";
+    }
+
+    function formatError(data, status) {
+      const body = data?.detail && typeof data.detail === "object" ? data.detail : data;
+      if (body?.error) {
+        let t = `Erreur ${status}\n\n${body.error}`;
+        if (body.detail) t += `\n\n${body.detail}`;
+        return t;
+      }
+      return JSON.stringify(data, null, 2);
+    }
+
+    function extractPipeline(data) {
+      const p = data.pipeline || {};
+      const ag = p.agents || {};
+      return {
+        analyzer: p.analyzer || ag.analyzer || "",
+        planner: p.planner || ag.planner || "",
+        writer: p.writer || ag.writer || "",
+        reviewer: p.reviewer || ag.reviewer || "",
+        final: p.final || ag.coach || "",
+        rag_sources: p.rag_sources || [],
+        exports: p.exports || {},
+      };
+    }
+
+    function renderResults(p) {
+      const root = $("results");
+      root.innerHTML = "";
+      STEPS.forEach(([key, title]) => {
+        const card = document.createElement("div");
+        card.className = "card";
+        const text = (p[key] || "").trim();
+        card.innerHTML = `<h2>${title}</h2><pre></pre>`;
+        card.querySelector("pre").textContent = text || "(aucun contenu)";
+        root.appendChild(card);
+      });
+      if (p.rag_sources?.length) {
+        const rag = document.createElement("div");
+        rag.className = "card";
+        rag.innerHTML = "<h2>Sources RAG</h2><pre></pre>";
+        rag.querySelector("pre").textContent = p.rag_sources.join("\n");
+        root.appendChild(rag);
+      }
+      root.classList.remove("hidden");
+    }
+
+    $("run").addEventListener("click", async () => {
+      const topic = $("topic").value.trim();
+      const session_id = $("session").value.trim() || null;
+      $("error").classList.add("hidden");
+      $("results").classList.add("hidden");
+      $("exports").classList.add("hidden");
+      if (!topic) {
+        $("status").className = "err";
+        $("status").textContent = "Saisissez un sujet.";
+        return;
+      }
+      setLoading(true);
+      try {
+        const body = { topic };
+        if (session_id) body.session_id = session_id;
+        const res = await fetch("/analyze", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          $("status").className = "err";
+          $("status").textContent = `Erreur ${res.status}`;
+          $("errorBody").textContent = formatError(data, res.status);
+          $("error").classList.remove("hidden");
+          return;
+        }
+        $("status").className = "ok";
+        $("status").textContent = "Terminé.";
+        const p = extractPipeline(data);
+        renderResults(p);
+        const links = $("exportLinks");
+        links.innerHTML = "";
+        for (const [label, path] of [["PDF", p.exports.pdf], ["DOCX", p.exports.docx]]) {
+          if (!path) continue;
+          const a = document.createElement("a");
+          a.href = "/" + String(path).replace(/^\//, "");
+          a.textContent = `Télécharger ${label}`;
+          a.target = "_blank";
+          links.appendChild(a);
+        }
+        if (links.children.length) $("exports").classList.remove("hidden");
+      } catch (e) {
+        $("status").className = "err";
+        $("status").textContent = "Serveur injoignable.";
+        $("errorBody").textContent = String(e);
+        $("error").classList.remove("hidden");
+      } finally {
+        setLoading(false);
+      }
+    });
+  </script>
+</body>
+</html>

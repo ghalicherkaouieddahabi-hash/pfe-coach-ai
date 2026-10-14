@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "coach-pfe": {
+      "command": "${workspaceFolder}/venv/Scripts/python.exe",
+      "args": ["${workspaceFolder}/run_mcp.py"],
+      "cwd": "${workspaceFolder}"
+    }
+  }
+}
